@@ -40,12 +40,15 @@ docker run -p 3000:3000 clock-stability
 { "id": 2, "status": "done", "kind": "phase", "tau0": 1.0, "points": 4096, "hasWhiteFM": true }
 ```
 
-缺项、非有限数、`tau0` 非正、序列过短、或所有候选 τ 都超过 T/3 时，记录落盘为
-失败态并写明原因，**不会**返回看似完整的假曲线：
+缺项、非有限数、`tau0` 非正、序列过短、或所有候选 τ 都超过 T/3 时，提交不被接受，
+响应 `422`；记录仍落盘为失败态并写明原因，**不会**返回看似完整的假曲线：
 
 ```json
 { "id": 3, "status": "failed", "reason": "tau0 must be a positive finite number" }
 ```
+
+即：光看 HTTP 状态码就能区分两拨——`201` 算好了，`422` 没算成（请求体本身不是
+合法 JSON 时是 `400`）。失败记录照常可用 `GET /records/:id` 取回，内容不变。
 
 ### `GET /records` — 摘要列表
 

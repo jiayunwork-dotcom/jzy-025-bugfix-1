@@ -262,11 +262,15 @@ test('halving tau0 keeps sigma_y at the same physical tau', async () => {
 
 // --- failure modes ----------------------------------------------------------
 
+// The upstream batch processor sorts submissions by HTTP status class alone:
+// 2xx means "computed", 4xx means "not accepted". These tests pin that
+// contract: failures must never answer with a success-class code again.
+
 test('non-positive tau0 fails the record with a reason', async () => {
   const series = syntheticWhiteFm(64, 1, 1);
   for (const tau0 of [0, -1]) {
     const { httpStatus, body } = await postRecord({ kind: 'frequency', tau0, series });
-    assert.equal(httpStatus, 201);
+    assert.equal(httpStatus, 422);
     assert.equal(body.status, 'failed');
     assert.match(body.reason, /tau0/);
     const { body: record } = await getRecord(body.id);
@@ -276,13 +280,15 @@ test('non-positive tau0 fails the record with a reason', async () => {
 });
 
 test('too-short series is refused', async () => {
-  const { body } = await postRecord({ kind: 'phase', tau0: 1, series: [0, 1, 0, 1] });
+  const { httpStatus, body } = await postRecord({ kind: 'phase', tau0: 1, series: [0, 1, 0, 1] });
+  assert.equal(httpStatus, 422);
   assert.equal(body.status, 'failed');
   assert.match(body.reason, /too short/);
 });
 
 test('missing fields and non-finite samples fail with reasons', async () => {
   const missing = await postRecord({});
+  assert.equal(missing.httpStatus, 422);
   assert.equal(missing.body.status, 'failed');
   assert.match(missing.body.reason, /kind/);
   assert.match(missing.body.reason, /tau0/);
@@ -293,14 +299,54 @@ test('missing fields and non-finite samples fail with reasons', async () => {
     tau0: 1,
     series: syntheticWhiteFm(64, 2, 1),
   });
+  assert.equal(badKind.httpStatus, 422);
   assert.equal(badKind.body.status, 'failed');
 
   // 1e999 parses to Infinity -> must be caught by the finite check
   const nonFinite = await postRecord(
     '{"kind":"frequency","tau0":1,"series":[1,2,3,4,5,6,7,1e999]}',
   );
+  assert.equal(nonFinite.httpStatus, 422);
   assert.equal(nonFinite.body.status, 'failed');
   assert.match(nonFinite.body.reason, /finite/);
+});
+
+test('status code alone separates computed from not-accepted submissions', async () => {
+  const good = await postRecord({
+    kind: 'frequency',
+    tau0: 1,
+    series: syntheticWhiteFm(64, 99, 1),
+  });
+  assert.equal(good.httpStatus, 201, 'computed submission keeps 201');
+  assert.equal(good.body.status, 'done');
+
+  const rejections = [
+    { kind: 'frequency', tau0: 0, series: syntheticWhiteFm(64, 3, 1) },
+    { kind: 'frequency', tau0: -2, series: syntheticWhiteFm(64, 4, 1) },
+    { kind: 'phase', tau0: 1, series: [1, 2, 3] },
+    {},
+  ];
+  for (const body of rejections) {
+    const { httpStatus, body: reply } = await postRecord(body);
+    assert.ok(
+      httpStatus >= 400 && httpStatus < 500,
+      `rejected submission must land in the client-error class, got ${httpStatus}`,
+    );
+    assert.ok(
+      httpStatus < 200 || httpStatus >= 300,
+      `rejected submission must not look like a success, got ${httpStatus}`,
+    );
+    assert.equal(reply.status, 'failed');
+    assert.equal(typeof reply.id, 'number', 'failed submission still returns its record id');
+    assert.equal(typeof reply.reason, 'string', 'failed submission still returns the reason');
+
+    // Persistence and retrieval are unaffected by the status-code fix.
+    const { httpStatus: getStatus, body: record } = await getRecord(reply.id);
+    assert.equal(getStatus, 200);
+    assert.equal(record.status, 'failed');
+    assert.equal(record.reason, reply.reason);
+    assert.equal(record.curve, undefined, 'failed record carries no curve');
+  }
 });
 
 // --- no cross-record contamination -----------------------------------------
