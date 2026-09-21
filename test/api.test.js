@@ -266,23 +266,32 @@ test('non-positive tau0 fails the record with a reason', async () => {
   const series = syntheticWhiteFm(64, 1, 1);
   for (const tau0 of [0, -1]) {
     const { httpStatus, body } = await postRecord({ kind: 'frequency', tau0, series });
-    assert.equal(httpStatus, 201);
+    assert.equal(httpStatus, 400, 'rejected submission must answer 400, not 201');
+    assert.ok(httpStatus >= 400 && httpStatus < 500, 'failure must land in the client-error band');
     assert.equal(body.status, 'failed');
     assert.match(body.reason, /tau0/);
-    const { body: record } = await getRecord(body.id);
+    assert.ok(Number.isInteger(body.id), 'failed response still carries the record id');
+    const { httpStatus: getStatus, body: record } = await getRecord(body.id);
+    assert.equal(getStatus, 200, 'retrieval of the persisted record is unaffected');
     assert.equal(record.status, 'failed');
     assert.equal(record.curve, undefined, 'failed record carries no curve');
   }
 });
 
 test('too-short series is refused', async () => {
-  const { body } = await postRecord({ kind: 'phase', tau0: 1, series: [0, 1, 0, 1] });
+  const { httpStatus, body } = await postRecord({
+    kind: 'phase',
+    tau0: 1,
+    series: [0, 1, 0, 1],
+  });
+  assert.equal(httpStatus, 400);
   assert.equal(body.status, 'failed');
   assert.match(body.reason, /too short/);
 });
 
 test('missing fields and non-finite samples fail with reasons', async () => {
   const missing = await postRecord({});
+  assert.equal(missing.httpStatus, 400);
   assert.equal(missing.body.status, 'failed');
   assert.match(missing.body.reason, /kind/);
   assert.match(missing.body.reason, /tau0/);
@@ -293,14 +302,52 @@ test('missing fields and non-finite samples fail with reasons', async () => {
     tau0: 1,
     series: syntheticWhiteFm(64, 2, 1),
   });
+  assert.equal(badKind.httpStatus, 400);
   assert.equal(badKind.body.status, 'failed');
 
   // 1e999 parses to Infinity -> must be caught by the finite check
   const nonFinite = await postRecord(
     '{"kind":"frequency","tau0":1,"series":[1,2,3,4,5,6,7,1e999]}',
   );
+  assert.equal(nonFinite.httpStatus, 400);
   assert.equal(nonFinite.body.status, 'failed');
   assert.match(nonFinite.body.reason, /finite/);
+});
+
+test('HTTP status alone separates accepted from rejected submissions', async () => {
+  // A client that only looks at the status code must never mistake a failed
+  // record for a computed one: success stays 201, every rejection lands in 4xx.
+  const ok = await postRecord({
+    kind: 'frequency',
+    tau0: 1,
+    series: syntheticWhiteFm(64, 9, 1),
+  });
+  assert.equal(ok.httpStatus, 201, 'successful submission keeps 201');
+  assert.equal(ok.body.status, 'done');
+
+  const rejected = [
+    { name: 'tau0 = 0', body: { kind: 'frequency', tau0: 0, series: syntheticWhiteFm(64, 1, 1) } },
+    { name: 'tau0 < 0', body: { kind: 'frequency', tau0: -2, series: syntheticWhiteFm(64, 1, 1) } },
+    { name: 'too few points', body: { kind: 'phase', tau0: 1, series: [0, 1, 0, 1] } },
+    { name: 'missing fields', body: {} },
+    {
+      name: 'non-finite sample',
+      body: '{"kind":"frequency","tau0":1,"series":[1,2,3,4,5,6,7,1e999]}',
+    },
+  ];
+
+  for (const { name, body } of rejected) {
+    const res = await postRecord(body);
+    assert.ok(
+      res.httpStatus >= 400 && res.httpStatus < 500,
+      `${name}: expected a 4xx status, got ${res.httpStatus}`,
+    );
+    assert.notEqual(res.httpStatus, 201, `${name}: must not share the success code`);
+    assert.equal(res.body.status, 'failed', `${name}: body still marks the record failed`);
+    assert.ok(typeof res.body.reason === 'string' && res.body.reason.length > 0,
+      `${name}: failure reason is still returned`);
+    assert.ok(Number.isInteger(res.body.id), `${name}: record id is still returned`);
+  }
 });
 
 // --- no cross-record contamination -----------------------------------------

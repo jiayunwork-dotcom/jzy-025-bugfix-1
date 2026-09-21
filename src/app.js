@@ -11,7 +11,9 @@ export function createApp(store) {
 
   // Submit one record segment. Every submission is persisted; invalid or
   // uncomputable ones come back as status "failed" with a reason and never
-  // carry a curve.
+  // carry a curve. A rejected request must also carry a 4xx status code —
+  // the failed record in the body is not enough, since clients gate on the
+  // HTTP status alone.
   app.post('/records', (req, res) => {
     const body = req.body ?? {};
     const label = typeof body.label === 'string' ? body.label : null;
@@ -28,7 +30,7 @@ export function createApp(store) {
         reason,
         payload: { submitted: body },
       });
-      return res.status(201).json({ id, status: 'failed', reason });
+      return res.status(400).json({ id, status: 'failed', reason });
     }
 
     const { kind, tau0, series } = validation.value;
@@ -44,7 +46,7 @@ export function createApp(store) {
         reason: result.reason,
         payload: { series },
       });
-      return res.status(201).json({ id, status: 'failed', reason: result.reason });
+      return res.status(422).json({ id, status: 'failed', reason: result.reason });
     }
 
     const id = store.insert({

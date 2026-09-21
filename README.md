@@ -40,10 +40,13 @@ docker run -p 3000:3000 clock-stability
 { "id": 2, "status": "done", "kind": "phase", "tau0": 1.0, "points": 4096, "hasWhiteFM": true }
 ```
 
-缺项、非有限数、`tau0` 非正、序列过短、或所有候选 τ 都超过 T/3 时，记录落盘为
-失败态并写明原因，**不会**返回看似完整的假曲线：
+缺项、非有限数、`tau0` 非正、序列过短、或所有候选 τ 都超过 T/3 时，记录照样落盘为
+失败态并写明原因，**不会**返回看似完整的假曲线；同时 HTTP 状态码落到客户端出错档
+（入参问题 `400 Bad Request`，通过校验但算不出曲线 `422 Unprocessable Entity`），
+只看状态码就能把失败提交与成功提交分开，不必解析响应体：
 
 ```json
+HTTP/1.1 400 Bad Request
 { "id": 3, "status": "failed", "reason": "tau0 must be a positive finite number" }
 ```
 
